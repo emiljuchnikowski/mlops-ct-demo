@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 
 
 def _config():
-    host = os.environ.get("LANGFUSE_HOST", "").rstrip("/")
-    public, secret = os.environ.get("LANGFUSE_PUBLIC_KEY", ""), os.environ.get("LANGFUSE_SECRET_KEY", "")
+    # Pasted keys often carry a trailing newline or space, which turns into 401 Unauthorized.
+    host = os.environ.get("LANGFUSE_HOST", "").strip().rstrip("/")
+    public, secret = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip(), os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
     return (host, public, secret) if host and public and secret else None
 
 
@@ -91,6 +92,28 @@ def read_score(name: str, trace_id: str, wait_s: int = 90) -> float | None:
                 return float(score["value"])
         time.sleep(3)
     return None
+
+
+def check() -> dict:
+    """Diagnose the Langfuse setup without revealing the keys: prefixes, stray whitespace, and the API's answer."""
+    raw_public, raw_secret = os.environ.get("LANGFUSE_PUBLIC_KEY", ""), os.environ.get("LANGFUSE_SECRET_KEY", "")
+    report = {
+        "host": os.environ.get("LANGFUSE_HOST", "").strip() or None,
+        "public_key_set": bool(raw_public.strip()), "secret_key_set": bool(raw_secret.strip()),
+        "public_starts_pk_lf": raw_public.strip().startswith("pk-lf-"),
+        "secret_starts_sk_lf": raw_secret.strip().startswith("sk-lf-"),
+        "keys_swapped": raw_public.strip().startswith("sk-lf-") and raw_secret.strip().startswith("pk-lf-"),
+        "whitespace_around_keys": raw_public != raw_public.strip() or raw_secret != raw_secret.strip(),
+        "public_key_length": len(raw_public.strip()), "secret_key_length": len(raw_secret.strip()),
+    }
+    if enabled():
+        try:
+            body = _request("GET", "/api/public/projects")
+            report["api"] = "200 OK"
+            report["projects"] = [p.get("name") for p in body.get("data", [])]
+        except urllib.error.HTTPError as err:
+            report["api"] = f"{err.code} {err.reason}"
+    return report
 
 
 def safe_log(trace_name: str, scores: dict, metadata: dict | None = None) -> None:

@@ -79,6 +79,10 @@ def main(argv: list[str]) -> int:
         return 0
     if cmd == "monitor":
         return monitor(path)
+    if cmd == "langfuse-check":
+        report = tracking.check()
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("api") == "200 OK" else 1
     if cmd == "bootstrap":
         entry = stages.bootstrap()
         print(json.dumps(entry, ensure_ascii=False))
