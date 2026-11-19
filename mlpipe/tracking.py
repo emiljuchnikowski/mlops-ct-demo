@@ -65,7 +65,7 @@ def run_url() -> str | None:
 
 def prediction_trace_id(version: str, customer_id: int) -> str:
     """Deterministic, so logging the same answer again updates its trace and keeps its ratings."""
-    return f"pred-{version}-{customer_id}"
+    return f"answer-{version}-{customer_id}"
 
 
 def session_for(sample: dict) -> str:
@@ -147,7 +147,7 @@ def feedback_for(version: str) -> list[float]:
     """All 'feedback' ratings on this model version's answers, from the test reviewer and from people."""
     if not enabled():
         return []
-    prefix = f"pred-{version}-"
+    prefix = f"answer-{version}-"
     return [float(s["value"]) for s in _scores(FEEDBACK) if str(s.get("traceId", "")).startswith(prefix)]
 
 
@@ -164,7 +164,7 @@ def reset_demo() -> dict:
     trace_ids = [t["id"] for t in _pages(f"/api/public/traces?tags={TAG}")]
     ours = set(trace_ids)
     score_ids = [s["id"] for name in (FEEDBACK, *OLD_SCORES) for s in _scores(name)
-                 if s.get("traceId") in ours or str(s.get("traceId", "")).startswith(("gh-", "pred-", "local-"))]
+                 if s.get("traceId") in ours or str(s.get("traceId", "")).startswith(("gh-", "pred-", "answer-", "local-"))]
     for sid in score_ids:
         _request("DELETE", f"/api/public/scores/{sid}")
     for i in range(0, len(trace_ids), 100):

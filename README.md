@@ -32,7 +32,7 @@ Tylko odpowiedzi modelu i ich oceny:
 
 | Element | Zawartość |
 | --- | --- |
-| ślad `churn-prediction` (`pred-<wersja>-<klient>`) | wejście: cechy klienta; wyjście: prawdopodobieństwo odejścia i odpowiedź „odejdzie” albo „zostanie”; w metadanych prawdziwa etykieta `actual_churn` i link do uruchomienia w GitHub Actions |
+| ślad `churn-prediction` (`answer-<wersja>-<klient>`) | wejście: cechy klienta; wyjście: prawdopodobieństwo odejścia i odpowiedź „odejdzie” albo „zostanie”; w metadanych prawdziwa etykieta `actual_churn` i link do uruchomienia w GitHub Actions |
 | generacja `predict_proba` w śladzie | ta sama odpowiedź, z nazwą modelu `churn-<wersja>` |
 | sesja `<wersja>-<partia danych>` | odpowiedzi jednej wersji modelu na jednej partii, np. `v1-batch_nov` |
 | użytkownik `klient-<id>` | klient, którego dotyczy odpowiedź |
