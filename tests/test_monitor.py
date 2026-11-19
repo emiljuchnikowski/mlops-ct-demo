@@ -33,10 +33,26 @@ def test_retrained_candidate_beats_production_on_the_current_holdout(registry, m
     assert stages.release()["version"] == "v2"
 
 
-def test_without_langfuse_keys_logging_is_a_no_op(monkeypatch):
+def test_without_langfuse_keys_langfuse_calls_are_no_ops(monkeypatch):
     monkeypatch.delenv("LANGFUSE_HOST", raising=False)
-    assert tracking.log("ml-pipeline", {"auc": 0.8}) is None
-    assert tracking.read_score("auc", "any") is None
+    assert tracking.log_predictions({"version": "v1", "labelled": "x.csv", "rows": []}) == 0
+    assert tracking.feedback_for("v1") == []
+
+
+def test_answers_are_traces_with_a_generation_in_a_session_per_batch(registry, monkeypatch):
+    for key, value in {"LANGFUSE_HOST": "http://x", "LANGFUSE_PUBLIC_KEY": "pk-lf-a", "LANGFUSE_SECRET_KEY": "sk-lf-b"}.items():
+        monkeypatch.setenv(key, value)
+    sent = []
+    monkeypatch.setattr(tracking, "_request", lambda method, path, payload=None: sent.append(payload) or {})
+    sample = stages.predictions_sample(NOV)
+    assert tracking.log_predictions(sample) == 10
+    events = sent[0]["batch"]
+    traces = [e["body"] for e in events if e["type"] == "trace-create"]
+    answers = [e["body"] for e in events if e["type"] == "generation-create"]
+    assert len(traces) == len(answers) == 10
+    assert {t["sessionId"] for t in traces} == {"v1-batch_nov"}
+    assert all(t["input"] and t["output"] and t["userId"].startswith("klient-") for t in traces)
+    assert {a["traceId"] for a in answers} == {t["id"] for t in traces} and answers[0]["model"] == "churn-v1"
 
 
 def test_low_ratings_trigger_retraining_even_with_a_good_auc():

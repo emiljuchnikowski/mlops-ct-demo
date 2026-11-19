@@ -1,12 +1,12 @@
 # Ciągły trening w GitHub Actions z oceną w Langfuse
 
-Demo do referatu 4 z MLOps („CI, CD i ciągły trening”), część 4. Model przewiduje rezygnację klientów (churn) na danych syntetycznych. Wszystko działa w GitHub Actions na runnerze na serwerze `ai-os-server`, a oceny trafiają do Langfuse.
+Demo do referatu 4 z MLOps („CI, CD i ciągły trening”), część 4. Model przewiduje rezygnację klientów (churn) na danych syntetycznych. Wszystko działa w GitHub Actions na runnerze na serwerze `ai-os-server`. Do Langfuse trafiają odpowiedzi modelu produkcyjnego i ich oceny, a wyniki treningu zostają w GitHub Actions.
 
 Pętla ma trzy workflowy:
 
-1. **`monitor`** działa co godzinę (i ręcznie). Liczy jakość modelu produkcyjnego (AUC) na najnowszych danych z etykietami i zapisuje ją w Langfuse jako ocenę `production_auc`. Do Langfuse wysyła też 10 predykcji modelu jako ślady `prediction`, które można ocenić. Decyzję podejmuje na podstawie oceny odczytanej z Langfuse i ocen predykcji: trening startuje, gdy AUC spadnie poniżej `monitor_min_auc` (0,75) albo gdy co najmniej `feedback_min_count` (5) ocen ma średnią poniżej `feedback_min_mean` (0,6). Progi są w `gates.yaml`. Przebieg z harmonogramu nie uruchamia drugi raz tego samego treningu: dla tej samej wersji modelu, tych samych danych i tej samej liczby ocen czeka na nowe oceny albo dane.
-2. **`review`** to testowy recenzent: ocenia te same predykcje w Langfuse oceną `feedback` (1 = trafna, 0 = chybiona). Ludzie dodają tę samą ocenę w interfejsie Langfuse, a monitor liczy obie.
-3. **`ml-pipeline`** przechodzi przez testy kodu, kontrakt danych, trening kandydata, bramki jakości i wydanie. Każdy etap zapisuje swoje oceny w Langfuse pod jednym śladem uruchomienia. Bramka porównuje kandydata z modelem produkcyjnym na tym samym, aktualnym zbiorze testowym: model produkcyjny jest oceniany na nim od nowa.
+1. **`monitor`** działa co godzinę (i ręcznie). Model produkcyjny odpowiada na najnowszych danych z etykietami, a 10 jego odpowiedzi trafia do Langfuse. Monitor odczytuje z Langfuse oceny tych odpowiedzi i liczy u siebie AUC. Trening startuje, gdy co najmniej `feedback_min_count` (5) ocen ma średnią poniżej `feedback_min_mean` (0,6) albo AUC spadnie poniżej `monitor_min_auc` (0,75). Progi są w `gates.yaml`. Przebieg z harmonogramu nie uruchamia drugi raz tego samego treningu: dla tej samej wersji modelu, tych samych danych i tej samej liczby ocen czeka na nowe oceny albo dane.
+2. **`review`** to testowy recenzent: ocenia odpowiedzi modelu w Langfuse oceną `feedback` (1 = trafna, 0 = chybiona). Ludzie dodają tę samą ocenę w interfejsie Langfuse, a monitor liczy obie.
+3. **`ml-pipeline`** przechodzi przez testy kodu, kontrakt danych, trening kandydata, bramki jakości i wydanie. Wyniki etapów są w logach, komunikatach i artefaktach uruchomienia w GitHub Actions. Bramka porównuje kandydata z modelem produkcyjnym na tym samym, aktualnym zbiorze testowym: model produkcyjny jest oceniany na nim od nowa.
 
 Rejestr modeli leży na serwerze w `~/mlops-ct-demo/registry`, więc wydanie przetrwa między uruchomieniami. `reset-registry` przywraca w nim wersję v1.
 
@@ -26,21 +26,23 @@ Dane listopadowe mają dryf pojęć: po zmianie cennika klienci planu basic prze
 
 Partie z referatu (`batch_broken.csv`, `batch_shuffled_labels.csv`) dalej zatrzymują `ml-pipeline` na kontrakcie albo na bramce jakości.
 
-## Oceny w Langfuse
+## Co jest w Langfuse
 
-| Ślad | Oceny |
+Tylko odpowiedzi modelu i ich oceny:
+
+| Element | Zawartość |
 | --- | --- |
-| `production-monitoring` | `production_auc`, a gdy są oceny predykcji także `feedback_mean`, `feedback_count` |
-| `prediction` (`pred-<wersja>-<klient>`) | `feedback` od testowego recenzenta i od ludzi |
-| `ml-pipeline` | `contract_ok`, `contract_violations`, `train_rows`, `auc_candidate`, `auc_production`, `gates_passed`, `released`, `released_version` |
+| ślad `churn-prediction` (`pred-<wersja>-<klient>`) | wejście: cechy klienta; wyjście: prawdopodobieństwo odejścia i odpowiedź „odejdzie” albo „zostanie”; w metadanych prawdziwa etykieta `actual_churn` i link do uruchomienia w GitHub Actions |
+| generacja `predict_proba` w śladzie | ta sama odpowiedź, z nazwą modelu `churn-<wersja>` |
+| sesja `<wersja>-<partia danych>` | odpowiedzi jednej wersji modelu na jednej partii, np. `v1-batch_nov` |
+| użytkownik `klient-<id>` | klient, którego dotyczy odpowiedź |
+| ocena `feedback` | 1 = trafna, 0 = chybiona; od testowego recenzenta (`review`) i od ludzi |
 
-Identyfikator śladu to `gh-<numer uruchomienia>-<próba>`, a w metadanych jest link do uruchomienia w GitHub Actions. Każdy etap to osobny span w śladzie, z wejściem (partia, zbiór testowy, wyzwalacz) i wynikiem etapu. Ślad monitoringu ma spany `pomiar jakości` i `decyzja`.
+`langfuse-reset` usuwa ślady z tagiem `mlops-ct-demo` i ich oceny, nic więcej. `langfuse-check` sprawdza klucze i pokazuje najnowszy ślad (sesja, wejście, wyjście, obserwacje).
 
-Sesje: monitor i `ml-pipeline`, który uruchomił, są w jednej sesji `ct-gh-<numer uruchomienia monitora>-<próba>`, więc w zakładce **Sessions** widać całą pętlę od pomiaru do wydania. Predykcje do oceny są w sesji `predykcje-<wersja modelu>`.
+### Ocena odpowiedzi w interfejsie Langfuse
 
-### Ocena predykcji w interfejsie Langfuse
-
-Ocena `feedback` ma konfigurację w projekcie (liczba od 0 do 1), więc w Langfuse: **Tracing → Traces**, filtr nazwy `prediction`, otwórz ślad i kliknij **Annotate**, wybierz `feedback` i wpisz wartość. Wejście śladu to cechy klienta, wyjście to prawdopodobieństwo odejścia i predykcja, a w metadanych jest prawdziwa etykieta `actual_churn`. Następny `monitor` (najpóźniej po godzinie, albo od razu po ręcznym uruchomieniu) policzy tę ocenę razem z ocenami testowymi. Po 10 ocenach testowych ze średnią 0,8 wystarczą 4 ludzkie oceny 0, żeby średnia spadła do 0,57 i ruszył trening.
+Ocena `feedback` ma konfigurację w projekcie (liczba od 0 do 1), więc w Langfuse: **Sessions** albo **Tracing**, otwórz ślad `churn-prediction`, kliknij **Annotate**, wybierz `feedback` i wpisz wartość. Prawdziwa etykieta jest w metadanych `actual_churn`, więc łatwo sprawdzić, czy odpowiedź była trafna. Następny `monitor` (najpóźniej po godzinie, albo od razu po ręcznym uruchomieniu) policzy tę ocenę razem z ocenami testowymi. Po 10 ocenach testowych ze średnią 0,8 wystarczą 4 ludzkie oceny 0, żeby średnia spadła do 0,57 i ruszył trening.
 
 Przykład: na danych z listopada testowy recenzent da średnią 0,3 (model v1 myli się po dryfie), więc monitor uruchomi trening nawet wtedy, gdyby AUC było jeszcze powyżej progu.
 
