@@ -1,0 +1,26 @@
+# Deletes this demo's traces (tag mlops-ct-demo) and their scores from Langfuse, before a clean rehearsal.
+# Other data in the Langfuse project is not touched. The 'feedback' score config stays.
+name: langfuse-reset
+
+on: workflow_dispatch
+
+concurrency:
+  group: ml-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+  LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+  LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  reset:
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: $PY -m mlpipe langfuse-reset

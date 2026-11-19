@@ -120,6 +120,52 @@ def read_score(name: str, trace_id: str, wait_s: int = 90) -> float | None:
     return None
 
 
+DEMO_SCORES = ("production_auc", "feedback_mean", "feedback_count", "contract_ok", "contract_violations", "train_rows",
+               "auc_candidate", "auc_production", "gates_passed", "released", "released_version", "feedback")
+
+
+def _pages(path: str) -> list:
+    """All items of a paginated list endpoint."""
+    items, page = [], 1
+    while True:
+        body = _request("GET", f"{path}&limit=100&page={page}")
+        items += body.get("data") or []
+        if page >= (body.get("meta") or {}).get("totalPages", 1):
+            return items
+        page += 1
+
+
+def reset_demo() -> dict:
+    """Delete this demo's traces (tag mlops-ct-demo) and their scores. Other data in the project stays."""
+    if not enabled():
+        return {"skipped": "brak kluczy"}
+    trace_ids = [t["id"] for t in _pages("/api/public/traces?tags=mlops-ct-demo")]
+    score_ids = []
+    for name in DEMO_SCORES:
+        try:
+            scores = _pages(f"/api/public/v2/scores?name={name}")
+        except urllib.error.HTTPError:
+            scores = _pages(f"/api/public/scores?name={name}")
+        score_ids += [s["id"] for s in scores if s.get("traceId") in trace_ids or
+                      str(s.get("traceId", "")).startswith(("gh-", "pred-", "local-"))]
+    for sid in score_ids:
+        _request("DELETE", f"/api/public/scores/{sid}")
+    for i in range(0, len(trace_ids), 100):
+        _request("DELETE", "/api/public/traces", {"traceIds": trace_ids[i:i + 100]})
+    return {"traces_deleted": len(trace_ids), "scores_deleted": len(score_ids)}
+
+
+def _latest_trace() -> dict | None:
+    """The newest demo trace, to check it is well linked: session, input, output and its observations."""
+    data = _request("GET", "/api/public/traces?tags=mlops-ct-demo&limit=1").get("data") or []
+    if not data:
+        return None
+    t = data[0]
+    return {"id": t.get("id"), "name": t.get("name"), "sessionId": t.get("sessionId"),
+            "has_input": t.get("input") not in (None, {}, ""), "has_output": t.get("output") not in (None, {}, ""),
+            "observations": len(t.get("observations") or []), "scores": len(t.get("scores") or [])}
+
+
 def _counts() -> dict:
     """How many traces, sessions, observations and scores the project holds (totals from the list endpoints)."""
     counts = {}
@@ -160,6 +206,7 @@ def check() -> dict:
             report["api"] = "200 OK"
             report["projects"] = [p.get("name") for p in body.get("data", [])]
             report["counts"] = _counts()
+            report["latest_trace"] = _latest_trace()
         except urllib.error.HTTPError as err:
             report["api"] = f"{err.code} {err.reason}"
     return report

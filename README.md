@@ -14,10 +14,11 @@ Rejestr modeli leży na serwerze w `~/mlops-ct-demo/registry`, więc wydanie prz
 
 | Krok | Workflow i dane | Wynik |
 | --- | --- | --- |
-| 0 | `reset-registry` | produkcja = v1 |
+| 0 | `langfuse-reset`, potem `reset-registry` | czysty Langfuse (tylko dane dema), produkcja = v1 |
 | 1 | `monitor`, `labelled` = `data/incoming/batch_ok.csv` | AUC 0,787 ≥ 0,75: bez zmian |
-| 1a | `review`, `labelled` = `data/incoming/batch_ok.csv` | 10 ocen testowych, średnia 0,8 |
-| 2 | `monitor`, `labelled` = `data/incoming/batch_nov.csv`, `holdout` = `data/holdout_nov.csv` | AUC 0,734 < 0,75: monitor sam uruchamia `ml-pipeline` |
+| 1a | `review`, `labelled` = `data/incoming/batch_ok.csv` | 10 ocen testowych predykcji v1, średnia 0,8 |
+| 1b | `review`, `labelled` = `data/incoming/batch_nov.csv` | 10 ocen predykcji v1 na danych z listopada, średnia 0,3 |
+| 2 | `monitor`, `labelled` = `data/incoming/batch_nov.csv`, `holdout` = `data/holdout_nov.csv` | AUC 0,734 < 0,75 i średnia ocen 0,55 < 0,6: monitor sam uruchamia `ml-pipeline` |
 | 3 | `ml-pipeline` uruchomiony przez monitor | kandydat 0,785 wobec produkcji 0,728 na tym samym zbiorze: wydanie v2 |
 | 4 | `monitor`, `labelled` = `data/holdout_nov.csv` | AUC 0,785 ≥ 0,75: bez zmian |
 

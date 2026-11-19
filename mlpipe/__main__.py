@@ -1,4 +1,4 @@
-"""One stage per call, for CI jobs: python -m mlpipe {validate,train,evaluate,release,monitor,review,langfuse-check,bootstrap} [file.csv]
+"""One stage per call, for CI jobs: python -m mlpipe {validate,train,evaluate,release,monitor,review,langfuse-check,langfuse-reset,bootstrap} [file.csv]
 
 Every stage writes its scores to the run's Langfuse trace (a no-op without Langfuse keys).
 `monitor` decides about retraining from the score it reads back from Langfuse.
@@ -128,6 +128,9 @@ def main(argv: list[str]) -> int:
         report = tracking.check()
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("api") == "200 OK" else 1
+    if cmd == "langfuse-reset":
+        print(json.dumps(tracking.reset_demo(), ensure_ascii=False))
+        return 0
     if cmd == "bootstrap":
         entry = stages.bootstrap()
         print(json.dumps(entry, ensure_ascii=False))
