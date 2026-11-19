@@ -6,6 +6,7 @@ so the pipeline and the tests run locally without Langfuse.
 import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -13,10 +14,16 @@ import uuid
 from datetime import datetime, timezone
 
 
+def _key(env: str, prefix: str) -> str:
+    """The key itself, even when a whole pasted line landed in the secret (e.g. LANGFUSE_SECRET_KEY = "sk-lf-...")."""
+    raw = os.environ.get(env, "").strip()
+    found = re.search(rf"{prefix}[A-Za-z0-9-]+", raw)
+    return found.group(0) if found else raw
+
+
 def _config():
-    # Pasted keys often carry a trailing newline or space, which turns into 401 Unauthorized.
     host = os.environ.get("LANGFUSE_HOST", "").strip().rstrip("/")
-    public, secret = os.environ.get("LANGFUSE_PUBLIC_KEY", "").strip(), os.environ.get("LANGFUSE_SECRET_KEY", "").strip()
+    public, secret = _key("LANGFUSE_PUBLIC_KEY", "pk-lf-"), _key("LANGFUSE_SECRET_KEY", "sk-lf-")
     return (host, public, secret) if host and public and secret else None
 
 
@@ -103,6 +110,8 @@ def check() -> dict:
         "public_starts_pk_lf": raw_public.strip().startswith("pk-lf-"),
         "secret_starts_sk_lf": raw_secret.strip().startswith("sk-lf-"),
         "keys_swapped": raw_public.strip().startswith("sk-lf-") and raw_secret.strip().startswith("pk-lf-"),
+        "secret_contains_sk_lf": "sk-lf-" in raw_secret, "public_contains_pk_lf": "pk-lf-" in raw_public,
+        "extracted_secret_length": len(_key("LANGFUSE_SECRET_KEY", "sk-lf-")),
         "whitespace_around_keys": raw_public != raw_public.strip() or raw_secret != raw_secret.strip(),
         "public_key_length": len(raw_public.strip()), "secret_key_length": len(raw_secret.strip()),
     }
