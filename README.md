@@ -34,7 +34,7 @@ Identyfikator śladu to `gh-<numer uruchomienia>-<próba>`, a w metadanych jest 
 
 ## Konfiguracja
 
-- Repozytorium jest prywatne, bo runner wykonuje kod z repozytorium na serwerze. Workflowy startują tylko ręcznie albo po `push` na `main`; nie ma wyzwalaczy `pull_request` ani harmonogramu.
+- Repozytorium jest publiczne, a runner wykonuje kod z repozytorium na serwerze. Dlatego workflowy startują tylko ręcznie albo po `push` na `main` (bez wyzwalaczy `pull_request` i bez harmonogramu), workflowy z pull requestów od osób spoza repozytorium czekają na zatwierdzenie właściciela, a dozwolone są tylko akcje GitHuba (`actions/*`).
 - Zmienna repozytorium `LANGFUSE_HOST` i sekrety `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` (klucze projektu w Langfuse). Bez kluczy pipeline działa, a zapis do Langfuse jest pomijany.
 - Runner z etykietą `ai-os-server`. Środowisko Pythona tworzy `scripts/ci_env.sh` w `~/mlops-ct-demo/venv-<skrót requirements>` i używa go ponownie.
 
