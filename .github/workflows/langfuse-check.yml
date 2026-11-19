@@ -19,3 +19,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: scripts/ci_env.sh
       - run: $PY -m mlpipe langfuse-check
+      - name: Sessions and ratings in detail
+        run: |
+          $PY - <<'PY'
+          from collections import Counter
+          from mlpipe import tracking
+          sessions = tracking._pages("/api/public/sessions?")
+          print("sessions:", sorted(s["id"] for s in sessions))
+          ratings = tracking._scores(tracking.FEEDBACK)
+          print("feedback by trace prefix:", Counter("-".join(str(s.get("traceId", "")).split("-")[:2]) for s in ratings))
+          PY
