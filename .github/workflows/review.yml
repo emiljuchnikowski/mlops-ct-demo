@@ -1,0 +1,34 @@
+# Test reviewer: rates the production model's sampled predictions in Langfuse ('feedback', 1 = right, 0 = wrong).
+# People can add the same 'feedback' score in the Langfuse UI; the monitor reads both.
+name: review
+
+on:
+  workflow_dispatch:
+    inputs:
+      labelled:
+        description: "Dane z etykietami, z których pochodzą oceniane predykcje"
+        default: data/incoming/batch_ok.csv
+
+concurrency:
+  group: ml-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  LABELLED: ${{ inputs.labelled }}
+  MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
+  LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+  LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+  LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  rate-predictions:
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: test -f ~/mlops-ct-demo/registry/production.json || $PY -m mlpipe bootstrap
+      - run: $PY -m mlpipe review "$LABELLED"

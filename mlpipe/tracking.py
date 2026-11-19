@@ -41,10 +41,19 @@ def _request(method: str, path: str, payload: dict | None = None) -> dict:
         return json.loads(resp.read() or b"{}")
 
 
+_LOCAL_RUN = f"local-{uuid.uuid4().hex[:12]}"
+STARTED = datetime.now(timezone.utc).isoformat()  # one CI step = one process, so this is the stage's start
+
+
+def session_id() -> str:
+    """Langfuse session: the monitor run and the ml-pipeline run it starts share one (LANGFUSE_SESSION)."""
+    return os.environ.get("LANGFUSE_SESSION", "").strip() or f"ct-{run_id()}"
+
+
 def run_id() -> str:
     """One trace per GitHub Actions run, shared by all its jobs; local runs get a random id."""
     rid = os.environ.get("GITHUB_RUN_ID")
-    return f"gh-{rid}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}" if rid else f"local-{uuid.uuid4().hex[:12]}"
+    return f"gh-{rid}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}" if rid else _LOCAL_RUN
 
 
 def run_url() -> str | None:
@@ -54,16 +63,26 @@ def run_url() -> str | None:
     return f"{env.get('GITHUB_SERVER_URL')}/{env.get('GITHUB_REPOSITORY')}/actions/runs/{env['GITHUB_RUN_ID']}"
 
 
-def log(trace_name: str, scores: dict, metadata: dict | None = None, trace_id: str | None = None) -> str | None:
-    """Upsert the run's trace and write numeric scores on it. Score ids are deterministic, so a re-run overwrites."""
+def log(trace_name: str, scores: dict, metadata: dict | None = None, trace_id: str | None = None,
+        stage: str | None = None, output=None) -> str | None:
+    """Upsert the run's trace (in its session), add the stage as a span with its result, and write numeric scores.
+
+    Span and score ids are deterministic, so a re-run of the same job overwrites instead of duplicating.
+    """
     if not enabled():
         print("Langfuse: brak kluczy, pomijam zapis")
         return None
     tid = trace_id or run_id()
     now = datetime.now(timezone.utc).isoformat()
-    batch = [{"id": uuid.uuid4().hex, "timestamp": now, "type": "trace-create",
-              "body": {"id": tid, "name": trace_name, "timestamp": now, "tags": ["mlops-ct-demo"],
-                       "metadata": {**(metadata or {}), "github_run": run_url()}}}]
+    trace = {"id": tid, "name": trace_name, "timestamp": now, "sessionId": session_id(), "tags": ["mlops-ct-demo"],
+             "input": metadata or {}, "metadata": {"github_run": run_url()}}
+    if output is not None:
+        trace["output"] = output
+    batch = [{"id": uuid.uuid4().hex, "timestamp": now, "type": "trace-create", "body": trace}]
+    if stage:
+        batch.append({"id": uuid.uuid4().hex, "timestamp": now, "type": "span-create", "body": {
+            "id": f"{tid}-{stage}", "traceId": tid, "name": stage, "startTime": STARTED, "endTime": now,
+            "input": metadata or {}, "output": output, "metadata": {"github_run": run_url()}}})
     for name, value in scores.items():
         batch.append({"id": uuid.uuid4().hex, "timestamp": now, "type": "score-create",
                       "body": {"id": f"{tid}-{name}", "traceId": tid, "name": name, "value": float(value),
@@ -71,13 +90,13 @@ def log(trace_name: str, scores: dict, metadata: dict | None = None, trace_id: s
     body = _request("POST", "/api/public/ingestion", {"batch": batch})
     if body.get("errors"):
         raise RuntimeError(f"Langfuse odrzucił zapis: {body['errors']}")
-    print(f"Langfuse: zapisano {len(scores)} ocen w śladzie {tid}")
+    print(f"Langfuse: ślad {tid} (sesja {session_id()}), etap {stage or '-'}, {len(scores)} ocen")
     return tid
 
 
 def _scores(name: str) -> list:
     """Scores with this name, newest first (tries the v2 endpoint, falls back to v1)."""
-    for path in (f"/api/public/v2/scores?name={name}&limit=50", f"/api/public/scores?name={name}&limit=50"):
+    for path in (f"/api/public/v2/scores?name={name}&limit=100", f"/api/public/scores?name={name}&limit=100"):
         try:
             data = _request("GET", path).get("data") or []
         except urllib.error.HTTPError as err:
@@ -101,6 +120,26 @@ def read_score(name: str, trace_id: str, wait_s: int = 90) -> float | None:
     return None
 
 
+def _counts() -> dict:
+    """How many traces, sessions, observations and scores the project holds (totals from the list endpoints)."""
+    counts = {}
+    for label, paths in {
+        "traces_mlops_ct_demo": ["/api/public/traces?tags=mlops-ct-demo&limit=1"],
+        "traces_prediction": ["/api/public/traces?name=prediction&limit=1"],
+        "sessions": ["/api/public/sessions?limit=1"],
+        "observations": ["/api/public/observations?limit=1", "/api/public/v2/observations?limit=1"],
+        "scores_feedback": [f"/api/public/v2/scores?name={FEEDBACK}&limit=1", f"/api/public/scores?name={FEEDBACK}&limit=1"],
+    }.items():
+        for path in paths:
+            try:
+                meta = _request("GET", path).get("meta") or {}
+                counts[label] = meta.get("totalItems", "brak meta")
+                break
+            except urllib.error.HTTPError as err:
+                counts[label] = f"{err.code} {err.reason}"
+    return counts
+
+
 def check() -> dict:
     """Diagnose the Langfuse setup without revealing the keys: prefixes, stray whitespace, and the API's answer."""
     raw_public, raw_secret = os.environ.get("LANGFUSE_PUBLIC_KEY", ""), os.environ.get("LANGFUSE_SECRET_KEY", "")
@@ -120,14 +159,82 @@ def check() -> dict:
             body = _request("GET", "/api/public/projects")
             report["api"] = "200 OK"
             report["projects"] = [p.get("name") for p in body.get("data", [])]
+            report["counts"] = _counts()
         except urllib.error.HTTPError as err:
             report["api"] = f"{err.code} {err.reason}"
     return report
 
 
-def safe_log(trace_name: str, scores: dict, metadata: dict | None = None) -> None:
+FEEDBACK = "feedback"
+
+
+def prediction_trace_id(version: str, customer_id: int) -> str:
+    """Deterministic, so logging the same sample again updates the traces and keeps their ratings."""
+    return f"pred-{version}-{customer_id}"
+
+
+def log_predictions(sample: dict) -> int:
+    """One trace per prediction, with the customer as input and the churn probability as output, ready to rate."""
+    if not enabled():
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    batch = []
+    for row in sample["rows"]:
+        tid = prediction_trace_id(sample["version"], row["customer_id"])
+        output = {"churn_probability": row["probability"], "prediction": row["prediction"]}
+        meta = {"model_version": sample["version"], "labelled": sample["labelled"],
+                "customer_id": row["customer_id"], "actual_churn": row["actual"], "github_run": run_url()}
+        batch.append({"id": uuid.uuid4().hex, "timestamp": now, "type": "trace-create", "body": {
+            "id": tid, "name": "prediction", "timestamp": now, "sessionId": f"predykcje-{sample['version']}",
+            "input": row["features"], "output": output, "metadata": meta,
+            "tags": ["mlops-ct-demo", "prediction", sample["version"]]}})
+        batch.append({"id": uuid.uuid4().hex, "timestamp": now, "type": "span-create", "body": {
+            "id": f"{tid}-predict", "traceId": tid, "name": f"model {sample['version']}: predict_proba",
+            "startTime": now, "endTime": now, "input": row["features"], "output": output, "metadata": meta}})
+    body = _request("POST", "/api/public/ingestion", {"batch": batch})
+    if body.get("errors"):
+        raise RuntimeError(f"Langfuse odrzucił predykcje: {body['errors']}")
+    return len(sample["rows"])
+
+
+def ensure_feedback_config() -> str | None:
+    """The 'feedback' score (0 to 1) as a score config, so people can rate predictions in the Langfuse UI."""
+    if not enabled():
+        return None
+    configs = _request("GET", "/api/public/score-configs?limit=100").get("data") or []
+    for config in configs:
+        if config.get("name") == FEEDBACK and not config.get("isArchived"):
+            return config["id"]
+    created = _request("POST", "/api/public/score-configs", {
+        "name": FEEDBACK, "dataType": "NUMERIC", "minValue": 0, "maxValue": 1,
+        "description": "Ocena predykcji modelu churn: 1 = trafna, 0 = chybiona. Średnia poniżej progu uruchamia ponowny trening."})
+    return created["id"]
+
+
+def rate(trace_id: str, value: float, comment: str, config_id: str | None) -> None:
+    """A test reviewer's rating. Its id is fixed per trace, so a re-run overwrites it instead of adding another."""
+    body = {"id": f"{trace_id}-feedback-test", "traceId": trace_id, "name": FEEDBACK, "value": float(value),
+            "dataType": "NUMERIC", "comment": comment}
+    if config_id:
+        body["configId"] = config_id
+    now = datetime.now(timezone.utc).isoformat()
+    result = _request("POST", "/api/public/ingestion",
+                      {"batch": [{"id": uuid.uuid4().hex, "timestamp": now, "type": "score-create", "body": body}]})
+    if result.get("errors"):
+        raise RuntimeError(f"Langfuse odrzucił ocenę: {result['errors']}")
+
+
+def feedback_for(version: str) -> list[float]:
+    """All 'feedback' ratings on this model version's predictions, from the test reviewer and from people."""
+    if not enabled():
+        return []
+    prefix = f"pred-{version}-"
+    return [float(s["value"]) for s in _scores(FEEDBACK) if str(s.get("traceId", "")).startswith(prefix)]
+
+
+def safe_log(trace_name: str, scores: dict, metadata: dict | None = None, stage: str | None = None, output=None) -> None:
     """Logging must never decide a gate: a Langfuse outage becomes a CI warning, not a failed stage."""
     try:
-        log(trace_name, scores, metadata)
+        log(trace_name, scores, metadata, stage=stage, output=output)
     except Exception as err:  # noqa: BLE001
         print(f"::warning title=Langfuse::zapis nieudany: {err}")

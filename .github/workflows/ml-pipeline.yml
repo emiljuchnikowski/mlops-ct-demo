@@ -18,6 +18,9 @@ on:
       reason:
         description: "Powód uruchomienia"
         default: ręcznie
+      session:
+        description: "Sesja w Langfuse (monitor podaje swoją, żeby pętla była w jednej sesji)"
+        default: ""
 
 concurrency:
   group: ml-registry
@@ -32,6 +35,7 @@ env:
   MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
   TRIGGER: ${{ inputs.reason || github.event_name }}
   LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+  LANGFUSE_SESSION: ${{ inputs.session }}
   LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
   LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
   PYTHONDONTWRITEBYTECODE: "1"

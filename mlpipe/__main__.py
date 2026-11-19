@@ -1,4 +1,4 @@
-"""One stage per call, for CI jobs: python -m mlpipe {validate,train,evaluate,release,monitor,bootstrap} [file.csv]
+"""One stage per call, for CI jobs: python -m mlpipe {validate,train,evaluate,release,monitor,review,langfuse-check,bootstrap} [file.csv]
 
 Every stage writes its scores to the run's Langfuse trace (a no-op without Langfuse keys).
 `monitor` decides about retraining from the score it reads back from Langfuse.
@@ -30,22 +30,56 @@ def _output(**values) -> None:
 def monitor(labelled: str) -> int:
     result = stages.monitor(labelled)
     print(json.dumps(result, ensure_ascii=False))
-    trace = None
+    sample = stages.predictions_sample(labelled)
+    feedback = []
     try:
-        trace = tracking.log("production-monitoring", {"production_auc": result["auc"]},
-                             {"labelled": result["labelled"], "production": result["version"]})
+        print(f"Langfuse: zapisano {tracking.log_predictions(sample)} predykcji modelu {sample['version']} do oceny")
+        feedback = tracking.feedback_for(result["version"])
+    except Exception as err:  # noqa: BLE001
+        print(f"::warning title=Langfuse::predykcje lub oceny niedostępne: {err}")
+    trace = None
+    scores = {"production_auc": result["auc"]}
+    if feedback:
+        scores.update(feedback_mean=sum(feedback) / len(feedback), feedback_count=len(feedback))
+    try:
+        trace = tracking.log("production-monitoring", scores, {"labelled": result["labelled"], "production": result["version"]},
+                             stage="pomiar jakości", output={**result, "feedback": feedback})
     except Exception as err:  # noqa: BLE001
         print(f"::warning title=Langfuse::zapis nieudany: {err}")
-    # The decision uses the score as Langfuse stores it; without Langfuse it falls back to the local value.
+    # The AUC used in the decision is the one Langfuse stores; without Langfuse it falls back to the local value.
     stored = tracking.read_score("production_auc", trace) if trace else None
     source = "Langfuse"
     if stored is None:
         print("::warning title=Langfuse::brak oceny w Langfuse, decyzja na wartości lokalnej")
         stored, source = result["auc"], "lokalnie"
-    retrain = stored < result["threshold"]
-    verdict = "PONOWNY TRENING" if retrain else "bez zmian"
-    print(f"::notice title=Monitoring::AUC produkcji {stored} ({source}) przy progu {result['threshold']}: {verdict}")
-    _output(retrain=retrain, production_auc=stored)
+    decision = stages.retrain_decision(stored, feedback)
+    ratings = (f"średnia ocen {decision['feedback_mean']} z {decision['feedback_count']}" if feedback
+               else "brak ocen predykcji")
+    verdict = "PONOWNY TRENING: " + "; ".join(decision["reasons"]) if decision["retrain"] else "bez zmian"
+    print(f"::notice title=Monitoring::model {result['version']}: AUC {stored} ({source}), {ratings} -> {verdict}")
+    if trace:
+        tracking.safe_log("production-monitoring", {}, {"labelled": result["labelled"], "production": result["version"]},
+                          stage="decyzja", output={**decision, "auc": stored, "auc_source": source})
+    _output(retrain=decision["retrain"], production_auc=stored)
+    return 0
+
+
+def review(labelled: str) -> int:
+    """Test reviewer: rates the production model's sampled predictions, 1 when right and 0 when wrong."""
+    if not tracking.enabled():
+        print("Langfuse: brak kluczy, nie ma czego oceniać")
+        return 1
+    sample = stages.predictions_sample(labelled)
+    tracking.log_predictions(sample)
+    config = tracking.ensure_feedback_config()
+    values = []
+    for row in sample["rows"]:
+        right = row["prediction"] == row["actual"]
+        values.append(int(right))
+        tracking.rate(tracking.prediction_trace_id(sample["version"], row["customer_id"]), int(right),
+                      "ocena testowa: predykcja trafna" if right else "ocena testowa: predykcja chybiona", config)
+    mean = round(sum(values) / len(values), 3)
+    print(f"::notice title=Oceny testowe::model {sample['version']}: {len(values)} ocen w Langfuse, średnia {mean}")
     return 0
 
 
@@ -56,12 +90,13 @@ def main(argv: list[str]) -> int:
         for v in violations:
             print(f"::error title=Kontrakt danych::{v}")
         print("kontrakt OK" if not violations else f"kontrakt NARUSZONY ({len(violations)})")
-        tracking.safe_log(PIPELINE, {"contract_ok": int(not violations), "contract_violations": len(violations)}, _context())
+        tracking.safe_log(PIPELINE, {"contract_ok": int(not violations), "contract_violations": len(violations)}, _context(),
+                          stage="kontrakt danych", output={"violations": violations})
         return 1 if violations else 0
     if cmd == "train":
         info = stages.train(path)
         print(json.dumps(info, ensure_ascii=False))
-        tracking.safe_log(PIPELINE, {"train_rows": info["rows"]}, _context())
+        tracking.safe_log(PIPELINE, {"train_rows": info["rows"]}, _context(), stage="trening", output=info)
         return 0
     if cmd == "evaluate":
         result = stages.evaluate()
@@ -69,16 +104,19 @@ def main(argv: list[str]) -> int:
             print(f"::error title=Bramka jakości::{reason}")
         print(json.dumps(result, ensure_ascii=False))
         tracking.safe_log(PIPELINE, {"auc_candidate": result["auc"], "auc_production": result["champion_auc"],
-                                     "gates_passed": int(result["passed"])}, _context())
+                                     "gates_passed": int(result["passed"])}, _context(), stage="bramki jakości", output=result)
         return 0 if result["passed"] else 1
     if cmd == "release":
         entry = stages.release()
         print(json.dumps(entry, ensure_ascii=False))
         print(f"::notice title=Wydanie::produkcja = {entry['version']} (AUC {entry['auc']})")
-        tracking.safe_log(PIPELINE, {"released": 1, "released_version": int(entry["version"][1:])}, _context())
+        tracking.safe_log(PIPELINE, {"released": 1, "released_version": int(entry["version"][1:])}, _context(),
+                          stage="wydanie", output=entry)
         return 0
     if cmd == "monitor":
         return monitor(path)
+    if cmd == "review":
+        return review(path)
     if cmd == "langfuse-check":
         report = tracking.check()
         print(json.dumps(report, ensure_ascii=False, indent=2))

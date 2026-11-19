@@ -118,6 +118,34 @@ def monitor(labelled: str | Path) -> dict:
     return {"version": champion["version"], "auc": auc, "threshold": threshold, "labelled": Path(labelled).name}
 
 
+FEATURE_COLUMNS = ["tenure_months", "monthly_fee", "plan", "support_tickets", "age"]
+
+
+def predictions_sample(labelled: str | Path, n: int = 10) -> dict:
+    """A fixed sample of the production model's predictions on labelled data, to be reviewed in Langfuse."""
+    champion = production()
+    model = _load(_model_path(champion["version"]))
+    df = pd.read_csv(labelled).head(n)
+    proba = model.predict_proba(build_features(df))[:, 1]
+    rows = [{"customer_id": int(row["customer_id"]),
+             "features": {c: (row[c].item() if hasattr(row[c], "item") else row[c]) for c in FEATURE_COLUMNS},
+             "probability": round(float(p), 3), "prediction": int(p >= 0.5), "actual": int(row[TARGET])}
+            for (_, row), p in zip(df.iterrows(), proba)]
+    return {"version": champion["version"], "labelled": Path(labelled).name, "rows": rows}
+
+
+def retrain_decision(auc: float, feedback: list[float]) -> dict:
+    """Retrain when the production AUC or the reviewers' ratings fall below the thresholds in gates.yaml."""
+    gates = yaml.safe_load(GATES.read_text(encoding="utf-8"))
+    reasons = []
+    if auc < gates["monitor_min_auc"]:
+        reasons.append(f"AUC {auc} < {gates['monitor_min_auc']}")
+    mean = round(sum(feedback) / len(feedback), 3) if feedback else None
+    if len(feedback) >= gates["feedback_min_count"] and mean < gates["feedback_min_mean"]:
+        reasons.append(f"średnia ocen {mean} < {gates['feedback_min_mean']} ({len(feedback)} ocen)")
+    return {"retrain": bool(reasons), "reasons": reasons, "feedback_mean": mean, "feedback_count": len(feedback)}
+
+
 def release() -> dict:
     """Promote the evaluated candidate to production in the (file-based) model registry."""
     approval = ARTIFACTS / "evaluation.json"

@@ -37,3 +37,17 @@ def test_without_langfuse_keys_logging_is_a_no_op(monkeypatch):
     monkeypatch.delenv("LANGFUSE_HOST", raising=False)
     assert tracking.log("ml-pipeline", {"auc": 0.8}) is None
     assert tracking.read_score("auc", "any") is None
+
+
+def test_low_ratings_trigger_retraining_even_with_a_good_auc():
+    assert not stages.retrain_decision(0.80, [1, 1, 0])["retrain"]          # too few ratings to count
+    low = stages.retrain_decision(0.80, [1, 0, 0, 0, 1])                     # 5 ratings, mean 0.4
+    assert low["retrain"] and "średnia ocen" in low["reasons"][0]
+    assert stages.retrain_decision(0.70, [])["retrain"]                     # AUC alone still decides
+
+
+def test_prediction_sample_is_fixed_and_labelled(registry):
+    sample = stages.predictions_sample(OK)
+    assert sample["version"] == "v1" and len(sample["rows"]) == 10
+    assert sample == stages.predictions_sample(OK)
+    assert {"probability", "prediction", "actual", "features"} <= set(sample["rows"][0])
