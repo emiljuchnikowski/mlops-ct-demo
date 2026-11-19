@@ -1,9 +1,12 @@
-# Production monitoring: quality of the production model on the newest labelled data.
-# The score goes to Langfuse and the decision is taken from the score read back from Langfuse.
-# Below gates.yaml: monitor_min_auc it starts ml-pipeline on the same data: continuous training.
+# Production monitoring: quality of the production model on the newest labelled data, plus the ratings people
+# and the test reviewer gave its predictions in Langfuse. The AUC is read back from Langfuse before deciding.
+# Below gates.yaml thresholds it starts ml-pipeline on the same data: continuous training.
+# Runs every hour (only while the repository variable MONITOR_SCHEDULE is "on") and by hand.
 name: monitor
 
 on:
+  schedule:
+    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       labelled:
@@ -22,8 +25,10 @@ permissions:
   actions: write  # to start ml-pipeline
 
 env:
-  LABELLED: ${{ inputs.labelled }}
-  RETRAIN_HOLDOUT: ${{ inputs.holdout }}
+  # A scheduled run has no inputs: it takes the data from repository variables, or the healthy batch.
+  LABELLED: ${{ inputs.labelled || vars.MONITOR_LABELLED || 'data/incoming/batch_ok.csv' }}
+  RETRAIN_HOLDOUT: ${{ inputs.holdout || vars.MONITOR_HOLDOUT || 'data/holdout.csv' }}
+  MONITOR_TRIGGER: ${{ github.event_name }}
   MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
   LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
   LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
@@ -32,19 +37,20 @@ env:
 
 jobs:
   production-quality:
+    if: github.event_name != 'schedule' || vars.MONITOR_SCHEDULE == 'on'
     runs-on: [self-hosted, ai-os-server]
     steps:
       - uses: actions/checkout@v4
       - run: scripts/ci_env.sh
       - run: test -f ~/mlops-ct-demo/registry/production.json || $PY -m mlpipe bootstrap
       - id: check
-        name: Jakość modelu produkcyjnego (ocena w Langfuse)
+        name: Jakość modelu i oceny predykcji (z Langfuse)
         run: $PY -m mlpipe monitor "$LABELLED"
-      - name: Ponowny trening, gdy ocena spadła poniżej progu
+      - name: Ponowny trening, gdy AUC albo oceny spadły poniżej progu
         if: steps.check.outputs.retrain == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          REASON: "monitor: AUC produkcji ${{ steps.check.outputs.production_auc }} ponizej progu"
+          REASON: "monitor (${{ github.event_name }}): ${{ steps.check.outputs.reason }}"
         run: |
           GH="$(command -v gh || echo /opt/homebrew/bin/gh)"
           "$GH" workflow run ml-pipeline.yml --ref "$GITHUB_REF_NAME" -f batch="$LABELLED" -f holdout="$RETRAIN_HOLDOUT" -f reason="$REASON" -f session="ct-gh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"

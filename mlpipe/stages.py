@@ -166,11 +166,26 @@ def release() -> dict:
     return entry
 
 
+def _evidence(version: str, labelled: str | Path, decision: dict) -> dict:
+    return {"version": version, "labelled": Path(labelled).name, "feedback_count": decision["feedback_count"]}
+
+
+def already_triggered(version: str, labelled: str | Path, decision: dict) -> bool:
+    """One retraining per piece of evidence: same model, same data and no new ratings means it was already started."""
+    path = REGISTRY / "monitor_state.json"
+    return path.exists() and json.loads(path.read_text(encoding="utf-8")) == _evidence(version, labelled, decision)
+
+
+def remember_trigger(version: str, labelled: str | Path, decision: dict) -> None:
+    _write_json(REGISTRY / "monitor_state.json", _evidence(version, labelled, decision))
+
+
 def bootstrap() -> dict:
     """Reset the registry to v1: a model trained on the reference data only."""
     train(None)
     _write_json(REGISTRY / "production.json", {"version": "v0", "auc": 0.0, "trained_on": []})
     shutil.rmtree(REGISTRY / "models", ignore_errors=True)
+    (REGISTRY / "monitor_state.json").unlink(missing_ok=True)
     evaluate()
     entry = release()
     shutil.rmtree(ARTIFACTS, ignore_errors=True)

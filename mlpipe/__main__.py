@@ -56,11 +56,18 @@ def monitor(labelled: str) -> int:
     ratings = (f"średnia ocen {decision['feedback_mean']} z {decision['feedback_count']}" if feedback
                else "brak ocen predykcji")
     verdict = "PONOWNY TRENING: " + "; ".join(decision["reasons"]) if decision["retrain"] else "bez zmian"
+    # A scheduled run must not start the same retraining every hour: it waits for new ratings, data or a new model.
+    if decision["retrain"]:
+        if os.environ.get("MONITOR_TRIGGER") == "schedule" and stages.already_triggered(result["version"], labelled, decision):
+            decision = {**decision, "retrain": False}
+            verdict = "trening dla tych danych i ocen już uruchomiony, czekam na nowe oceny albo dane"
+        else:
+            stages.remember_trigger(result["version"], labelled, decision)
     print(f"::notice title=Monitoring::model {result['version']}: AUC {stored} ({source}), {ratings} -> {verdict}")
     if trace:
         tracking.safe_log("production-monitoring", {}, {"labelled": result["labelled"], "production": result["version"]},
                           stage="decyzja", output={**decision, "auc": stored, "auc_source": source})
-    _output(retrain=decision["retrain"], production_auc=stored)
+    _output(retrain=decision["retrain"], production_auc=stored, reason="; ".join(decision["reasons"]) or "-")
     return 0
 
 

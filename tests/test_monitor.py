@@ -51,3 +51,14 @@ def test_prediction_sample_is_fixed_and_labelled(registry):
     assert sample["version"] == "v1" and len(sample["rows"]) == 10
     assert sample == stages.predictions_sample(OK)
     assert {"probability", "prediction", "actual", "features"} <= set(sample["rows"][0])
+
+
+def test_one_retraining_per_piece_of_evidence(registry):
+    low = stages.retrain_decision(0.80, [0, 0, 0, 0, 1])
+    assert not stages.already_triggered("v1", OK, low)
+    stages.remember_trigger("v1", OK, low)
+    assert stages.already_triggered("v1", OK, low)
+    assert not stages.already_triggered("v1", OK, stages.retrain_decision(0.80, [0, 0, 0, 0, 1, 0]))  # a new rating
+    assert not stages.already_triggered("v2", OK, low)                                                  # a new model
+    stages.bootstrap()
+    assert not stages.already_triggered("v1", OK, low)

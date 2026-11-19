@@ -4,7 +4,7 @@ Demo do referatu 4 z MLOps („CI, CD i ciągły trening”), część 4. Model 
 
 Pętla ma trzy workflowy:
 
-1. **`monitor`** liczy jakość modelu produkcyjnego (AUC) na najnowszych danych z etykietami i zapisuje ją w Langfuse jako ocenę `production_auc`. Do Langfuse wysyła też 10 predykcji modelu jako ślady `prediction`, które można ocenić. Decyzję podejmuje na podstawie oceny odczytanej z Langfuse i ocen predykcji: trening startuje, gdy AUC spadnie poniżej `monitor_min_auc` (0,75) albo gdy co najmniej `feedback_min_count` (5) ocen ma średnią poniżej `feedback_min_mean` (0,6). Progi są w `gates.yaml`.
+1. **`monitor`** działa co godzinę (i ręcznie). Liczy jakość modelu produkcyjnego (AUC) na najnowszych danych z etykietami i zapisuje ją w Langfuse jako ocenę `production_auc`. Do Langfuse wysyła też 10 predykcji modelu jako ślady `prediction`, które można ocenić. Decyzję podejmuje na podstawie oceny odczytanej z Langfuse i ocen predykcji: trening startuje, gdy AUC spadnie poniżej `monitor_min_auc` (0,75) albo gdy co najmniej `feedback_min_count` (5) ocen ma średnią poniżej `feedback_min_mean` (0,6). Progi są w `gates.yaml`. Przebieg z harmonogramu nie uruchamia drugi raz tego samego treningu: dla tej samej wersji modelu, tych samych danych i tej samej liczby ocen czeka na nowe oceny albo dane.
 2. **`review`** to testowy recenzent: ocenia te same predykcje w Langfuse oceną `feedback` (1 = trafna, 0 = chybiona). Ludzie dodają tę samą ocenę w interfejsie Langfuse, a monitor liczy obie.
 3. **`ml-pipeline`** przechodzi przez testy kodu, kontrakt danych, trening kandydata, bramki jakości i wydanie. Każdy etap zapisuje swoje oceny w Langfuse pod jednym śladem uruchomienia. Bramka porównuje kandydata z modelem produkcyjnym na tym samym, aktualnym zbiorze testowym: model produkcyjny jest oceniany na nim od nowa.
 
@@ -39,14 +39,15 @@ Sesje: monitor i `ml-pipeline`, który uruchomił, są w jednej sesji `ct-gh-<nu
 
 ### Ocena predykcji w interfejsie Langfuse
 
-Ocena `feedback` ma konfigurację w projekcie (liczba od 0 do 1), więc w Langfuse: **Tracing → Traces**, filtr nazwy `prediction`, otwórz ślad i kliknij **Annotate**, wybierz `feedback` i wpisz wartość. Wejście śladu to cechy klienta, wyjście to prawdopodobieństwo odejścia i predykcja, a w metadanych jest prawdziwa etykieta `actual_churn`. Następny `monitor` policzy tę ocenę razem z ocenami testowymi.
+Ocena `feedback` ma konfigurację w projekcie (liczba od 0 do 1), więc w Langfuse: **Tracing → Traces**, filtr nazwy `prediction`, otwórz ślad i kliknij **Annotate**, wybierz `feedback` i wpisz wartość. Wejście śladu to cechy klienta, wyjście to prawdopodobieństwo odejścia i predykcja, a w metadanych jest prawdziwa etykieta `actual_churn`. Następny `monitor` (najpóźniej po godzinie, albo od razu po ręcznym uruchomieniu) policzy tę ocenę razem z ocenami testowymi. Po 10 ocenach testowych ze średnią 0,8 wystarczą 4 ludzkie oceny 0, żeby średnia spadła do 0,57 i ruszył trening.
 
 Przykład: na danych z listopada testowy recenzent da średnią 0,3 (model v1 myli się po dryfie), więc monitor uruchomi trening nawet wtedy, gdyby AUC było jeszcze powyżej progu.
 
 ## Konfiguracja
 
-- Repozytorium jest publiczne, a runner wykonuje kod z repozytorium na serwerze. Dlatego workflowy startują tylko ręcznie albo po `push` na `main` (bez wyzwalaczy `pull_request` i bez harmonogramu), workflowy z pull requestów od osób spoza repozytorium czekają na zatwierdzenie właściciela, a dozwolone są tylko akcje GitHuba (`actions/*`).
+- Repozytorium jest publiczne, a runner wykonuje kod z repozytorium na serwerze. Dlatego workflowy startują ręcznie, po `push` na `main` albo (tylko `monitor`) z harmonogramu, nigdy z `pull_request`, workflowy z pull requestów od osób spoza repozytorium czekają na zatwierdzenie właściciela, a dozwolone są tylko akcje GitHuba (`actions/*`).
 - Zmienna repozytorium `LANGFUSE_HOST` i sekrety `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` (klucze projektu w Langfuse). Bez kluczy pipeline działa, a zapis do Langfuse jest pomijany.
+- Harmonogram monitora (co godzinę, minuta 7) działa tylko przy zmiennej repozytorium `MONITOR_SCHEDULE=on`. Wyłączenie: `gh variable set MONITOR_SCHEDULE -b off`. Dane dla przebiegu z harmonogramu biorą się ze zmiennych `MONITOR_LABELLED` i `MONITOR_HOLDOUT` (domyślnie `data/incoming/batch_ok.csv` i `data/holdout.csv`). GitHub wyłącza harmonogramy w publicznym repozytorium po 60 dniach bez aktywności.
 - Runner z etykietą `ai-os-server`. Środowisko Pythona tworzy `scripts/ci_env.sh` w `~/mlops-ct-demo/venv-<skrót requirements>` i używa go ponownie.
 
 ## Lokalnie
