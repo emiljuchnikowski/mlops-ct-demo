@@ -38,12 +38,13 @@ def monitor(labelled: str) -> int:
         print(f"::warning title=Langfuse::zapis nieudany: {err}")
     # The decision uses the score as Langfuse stores it; without Langfuse it falls back to the local value.
     stored = tracking.read_score("production_auc", trace) if trace else None
+    source = "Langfuse"
     if stored is None:
         print("::warning title=Langfuse::brak oceny w Langfuse, decyzja na wartości lokalnej")
-        stored = result["auc"]
+        stored, source = result["auc"], "lokalnie"
     retrain = stored < result["threshold"]
     verdict = "PONOWNY TRENING" if retrain else "bez zmian"
-    print(f"::notice title=Monitoring::AUC produkcji {stored} (Langfuse) przy progu {result['threshold']}: {verdict}")
+    print(f"::notice title=Monitoring::AUC produkcji {stored} ({source}) przy progu {result['threshold']}: {verdict}")
     _output(retrain=retrain, production_auc=stored)
     return 0
 
