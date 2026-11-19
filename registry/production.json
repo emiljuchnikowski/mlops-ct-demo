@@ -1,0 +1,7 @@
+{
+  "version": "v1",
+  "auc": 0.8228,
+  "trained_on": [
+    "reference.csv"
+  ]
+}

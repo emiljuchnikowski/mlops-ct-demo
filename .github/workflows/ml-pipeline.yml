@@ -1,0 +1,90 @@
+# CI (code + data) -> CT (training) -> quality gates -> CD (release to the model registry).
+# Runs on the self-hosted runner on ai-os-server. The registry (production pointer and model versions) lives there,
+# outside the checkout, so a release survives between runs. Every stage writes its scores to Langfuse.
+name: ml-pipeline
+
+on:
+  push:
+    branches: [main]
+    paths: ["data/incoming/**", "mlpipe/**", "contracts/**", "tests/**", "gates.yaml"]
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Nowa partia danych do treningu"
+        default: data/incoming/batch_ok.csv
+      holdout:
+        description: "Zbiór testowy dla bramek jakości"
+        default: data/holdout.csv
+      reason:
+        description: "Powód uruchomienia"
+        default: ręcznie
+
+concurrency:
+  group: ml-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  BATCH: ${{ inputs.batch || 'data/incoming/batch_ok.csv' }}
+  MLPIPE_HOLDOUT: ${{ inputs.holdout || 'data/holdout.csv' }}
+  MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
+  TRIGGER: ${{ inputs.reason || github.event_name }}
+  LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+  LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+  LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  unit-tests:
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: $PY -m pytest -q -p no:cacheprovider
+      - name: Rejestr modeli na serwerze (v1 przy pierwszym uruchomieniu)
+        run: test -f ~/mlops-ct-demo/registry/production.json || $PY -m mlpipe bootstrap
+
+  data-contract:
+    needs: unit-tests
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: $PY -m mlpipe validate "$BATCH"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: contract-report, path: artifacts/contract_report.json}
+
+  train:
+    needs: data-contract
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: $PY -m mlpipe train "$BATCH"
+      - uses: actions/upload-artifact@v4
+        with: {name: candidate, path: artifacts/}
+
+  quality-gates:
+    needs: train
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - uses: actions/download-artifact@v4
+        with: {name: candidate, path: artifacts/}
+      - run: $PY -m mlpipe evaluate
+      - uses: actions/upload-artifact@v4
+        with: {name: evaluated-candidate, path: artifacts/}
+
+  release:
+    needs: quality-gates
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - uses: actions/download-artifact@v4
+        with: {name: evaluated-candidate, path: artifacts/}
+      - run: $PY -m mlpipe release

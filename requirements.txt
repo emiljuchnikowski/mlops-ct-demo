@@ -1,0 +1,6 @@
+# Exact versions used to produce the numbers on the slides (Python 3.12.9, macOS arm64).
+numpy==2.5.3
+pandas==3.0.6
+scikit-learn==1.9.1
+pyyaml==6.0.3
+pytest==9.1.1

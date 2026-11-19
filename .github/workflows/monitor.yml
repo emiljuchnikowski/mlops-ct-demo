@@ -1,0 +1,51 @@
+# Production monitoring: quality of the production model on the newest labelled data.
+# The score goes to Langfuse and the decision is taken from the score read back from Langfuse.
+# Below gates.yaml: monitor_min_auc it starts ml-pipeline on the same data: continuous training.
+name: monitor
+
+on:
+  workflow_dispatch:
+    inputs:
+      labelled:
+        description: "Najnowsze dane z etykietami"
+        default: data/incoming/batch_ok.csv
+      holdout:
+        description: "Zbiór testowy dla ponownego treningu"
+        default: data/holdout.csv
+
+concurrency:
+  group: ml-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write  # to start ml-pipeline
+
+env:
+  LABELLED: ${{ inputs.labelled }}
+  RETRAIN_HOLDOUT: ${{ inputs.holdout }}
+  MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
+  LANGFUSE_HOST: ${{ vars.LANGFUSE_HOST }}
+  LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+  LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  production-quality:
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: test -f ~/mlops-ct-demo/registry/production.json || $PY -m mlpipe bootstrap
+      - id: check
+        name: Jakość modelu produkcyjnego (ocena w Langfuse)
+        run: $PY -m mlpipe monitor "$LABELLED"
+      - name: Ponowny trening, gdy ocena spadła poniżej progu
+        if: steps.check.outputs.retrain == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REASON: "monitor: AUC produkcji ${{ steps.check.outputs.production_auc }} ponizej progu"
+        run: |
+          GH="$(command -v gh || echo /opt/homebrew/bin/gh)"
+          "$GH" workflow run ml-pipeline.yml --ref "$GITHUB_REF_NAME" -f batch="$LABELLED" -f holdout="$RETRAIN_HOLDOUT" -f reason="$REASON"
+          echo "::notice title=Ciągły trening::uruchomiono ml-pipeline na $LABELLED"

@@ -1,0 +1,14 @@
+# Data contract between the CRM export (producer) and the churn model (consumer).
+# Versioned in git like code: a change here is a reviewed pull request.
+name: churn
+version: 1
+owner: zespol-crm
+columns:
+  customer_id:     {type: int,      nullable: false, unique: true}
+  tenure_months:   {type: int,      nullable: false, min: 0, max: 600}
+  monthly_fee:     {type: float,    nullable: false, min: 0, max: 500}   # PLN per month
+  plan:            {type: category, nullable: false, allowed: [basic, standard, premium]}
+  support_tickets: {type: int,      nullable: false, min: 0, max: 100}
+  age:             {type: int,      nullable: false, min: 18, max: 110}
+  churn:           {type: int,      nullable: false, allowed: [0, 1]}
+min_rows: 500

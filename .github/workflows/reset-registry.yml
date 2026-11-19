@@ -1,0 +1,23 @@
+# Before a demo: the registry on the server back to v1 (a model trained on the reference data only).
+name: reset-registry
+
+on: workflow_dispatch
+
+concurrency:
+  group: ml-registry
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  MLPIPE_REGISTRY: ~/mlops-ct-demo/registry
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  reset:
+    runs-on: [self-hosted, ai-os-server]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/ci_env.sh
+      - run: $PY -m mlpipe bootstrap

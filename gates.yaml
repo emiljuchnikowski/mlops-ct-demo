@@ -1,0 +1,4 @@
+# Quality gates a trained candidate must pass before it may be released.
+min_auc: 0.75                      # absolute floor on the golden holdout set
+max_auc_drop_vs_production: 0.005  # challenger may not be worse than the champion by more than this
+monitor_min_auc: 0.75              # production AUC on fresh labelled data below this triggers retraining
